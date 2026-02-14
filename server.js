@@ -10,6 +10,7 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({
     status: "ok",
     service: "elevenlabs-ws-proxy",
+    version: "v2",
     api_key_configured: !!API_KEY,
   }));
 });
@@ -59,22 +60,24 @@ wss.on("connection", async (clientWs, req) => {
     let elMsgCount = 0;
     let elConnected = false;
 
-    // Buffer client messages until ElevenLabs connects
     const messageBuffer = [];
 
-    // Client → ElevenLabs
-    clientWs.on("message", (data) => {
+    // Client → ElevenLabs (PRESERVE message type: text vs binary)
+    clientWs.on("message", (data, isBinary) => {
       clientMsgCount++;
-      if (elConnected && elWs.readyState === WebSocket.OPEN) {
-        elWs.send(data);
-      } else {
-        messageBuffer.push(data);
+
+      if (clientMsgCount <= 5 || clientMsgCount % 200 === 0) {
+        if (isBinary) {
+          console.log(`[PROXY] Client→EL #${clientMsgCount}: [binary ${data.length} bytes]`);
+        } else {
+          console.log(`[PROXY] Client→EL #${clientMsgCount}: ${data.toString().substring(0, 100)}`);
+        }
       }
-      if (clientMsgCount <= 3 || clientMsgCount % 200 === 0) {
-        const preview = typeof data === "string"
-          ? data.substring(0, 80)
-          : `[binary ${data.length} bytes]`;
-        console.log(`[PROXY] Client→EL #${clientMsgCount}: ${preview}`);
+
+      if (elConnected && elWs.readyState === WebSocket.OPEN) {
+        elWs.send(data, { binary: isBinary });
+      } else {
+        messageBuffer.push({ data, isBinary });
       }
     });
 
@@ -85,29 +88,32 @@ wss.on("connection", async (clientWs, req) => {
       // Flush buffered messages
       while (messageBuffer.length > 0) {
         const msg = messageBuffer.shift();
-        elWs.send(msg);
+        elWs.send(msg.data, { binary: msg.isBinary });
       }
 
       clientWs.send(JSON.stringify({ type: "proxy_connected" }));
     });
 
-    // ElevenLabs → Client
-    elWs.on("message", (data) => {
+    // ElevenLabs → Client (PRESERVE message type: text vs binary)
+    elWs.on("message", (data, isBinary) => {
       elMsgCount++;
-      if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(data);
+
+      if (elMsgCount <= 10 || elMsgCount % 100 === 0) {
+        if (isBinary) {
+          console.log(`[PROXY] EL→Client #${elMsgCount}: [binary ${data.length} bytes]`);
+        } else {
+          console.log(`[PROXY] EL→Client #${elMsgCount}: ${data.toString().substring(0, 150)}`);
+        }
       }
-      if (elMsgCount <= 5 || elMsgCount % 100 === 0) {
-        const preview = typeof data === "string"
-          ? (typeof data === "object" ? data.toString().substring(0, 120) : String(data).substring(0, 120))
-          : `[binary ${data.length} bytes]`;
-        console.log(`[PROXY] EL→Client #${elMsgCount}: ${preview}`);
+
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(data, { binary: isBinary });
       }
     });
 
-    // Handle disconnections
     clientWs.on("close", (code, reason) => {
-      console.log(`[PROXY] Client disconnected: ${code}. Msgs: client=${clientMsgCount}, el=${elMsgCount}`);
+      const r = reason ? reason.toString() : "";
+      console.log(`[PROXY] Client disconnected: ${code} ${r}. Msgs: client=${clientMsgCount}, el=${elMsgCount}`);
       if (elWs.readyState === WebSocket.OPEN) elWs.close();
     });
 
@@ -117,7 +123,6 @@ wss.on("connection", async (clientWs, req) => {
       if (clientWs.readyState === WebSocket.OPEN) clientWs.close(code, r);
     });
 
-    // Handle errors
     clientWs.on("error", (e) => {
       console.error("[PROXY] Client error:", e.message);
       if (elWs.readyState === WebSocket.OPEN) elWs.close();
@@ -139,5 +144,5 @@ wss.on("connection", async (clientWs, req) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[PROXY] WebSocket proxy running on port ${PORT}`);
+  console.log(`[PROXY] WebSocket proxy v2 running on port ${PORT}`);
 });
